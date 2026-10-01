@@ -2,8 +2,16 @@ import dotenv from 'dotenv'
 import express from 'express'
 import OpenAI from 'openai'
 import process from 'node:process'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createServer as createViteServer } from 'vite'
+
+import { buildWeatherAssistantReply } from './assistant.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const frontendRoot = resolve(__dirname, '../frontend/src/component/Frontend')
+const distPath = resolve(__dirname, '../frontend/dist')
 
 dotenv.config({ path: '.env.local' })
 dotenv.config()
@@ -43,11 +51,11 @@ app.post(['/api/assistant', '/api/chat'], async (request, response) => {
         requestRecord.count += 1
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-        return response.status(503).json({ error: 'The assistant needs an OPENAI_API_KEY in the server environment.' })
-    }
-
     try {
+        if (!process.env.OPENAI_API_KEY) {
+            throw Object.assign(new Error('The assistant is running in local fallback mode.'), { status: 503 })
+        }
+
         const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
         const completion = await client.responses.create({
             model: process.env.OPENAI_MODEL || 'gpt-5-mini',
@@ -64,12 +72,18 @@ app.post(['/api/assistant', '/api/chat'], async (request, response) => {
         return response.json({ answer })
     } catch (error) {
         const status = error.status ?? 502
-        console.error('OpenAI request failed:', status, error.code ?? 'unknown error')
-        const message = status === 401
-            ? 'The OpenAI API key is invalid or expired. Replace it in .env.local.'
-            : status === 429
-                ? 'OpenAI rate limit or billing limit reached. Check your OpenAI project usage.'
-                : 'The assistant is temporarily unavailable. Please try again.'
+        const context = request.body?.context ?? {}
+        const fallbackAnswer = buildWeatherAssistantReply(question, context)
+
+        console.warn('OpenAI request failed; using local fallback:', status, error.code ?? 'unknown error')
+
+        if (status === 401 || status === 403 || status === 429 || status === 503) {
+            return response.json({ answer: fallbackAnswer })
+        }
+
+        const message = status === 429
+            ? 'OpenAI rate limit or billing limit reached. Check your OpenAI project usage.'
+            : 'The assistant is temporarily unavailable. Please try again.'
         return response.status(502).json({ error: message })
     }
 })
@@ -77,7 +91,6 @@ app.post(['/api/assistant', '/api/chat'], async (request, response) => {
 const isProduction = process.argv.includes('--production')
 
 if (isProduction) {
-    const distPath = resolve('dist')
     app.use(express.static(distPath))
     app.use((request, response, next) => {
         if (request.method !== 'GET' || request.path.startsWith('/api/')) return next()
@@ -85,7 +98,14 @@ if (isProduction) {
     })
 } else {
     const vite = await createViteServer({
+        root: frontendRoot,
         appType: 'spa',
+        resolve: {
+            alias: {
+                react: resolve(__dirname, 'node_modules/react'),
+                'react-dom': resolve(__dirname, 'node_modules/react-dom'),
+            },
+        },
         server: { middlewareMode: true },
     })
     app.use(vite.middlewares)
