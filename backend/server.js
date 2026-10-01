@@ -106,7 +106,10 @@ if (isProduction) {
                 'react-dom': resolve(__dirname, 'node_modules/react-dom'),
             },
         },
-        server: { middlewareMode: true },
+        server: {
+            middlewareMode: true,
+            allowedHosts: ['weather-app-rn3z.onrender.com'],
+        },
     })
     app.use(vite.middlewares)
 }
